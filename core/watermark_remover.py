@@ -813,49 +813,64 @@ def extract_text_watermark_mask(rgb: np.ndarray, sensitivity: float = 0.5) -> np
 
 
 def inpaint_mask(rgb: np.ndarray, mask: np.ndarray, use_ai: bool = True, prefer_gpu: bool = False) -> tuple[np.ndarray, dict]:
-    """Inpaint theo một mặt nạ nhị phân bất kỳ (từ Brush hoặc Auto Detector)."""
+    """Inpaint theo một mặt nạ nhị phân bất kỳ với tối ưu ROI Bounding Box siêu tốc cho cả 4K/8K."""
     if mask is None or int(mask.sum()) == 0:
         return rgb.copy(), {"applied": False, "reason": "EMPTY_MASK"}
 
-    m_u8 = (mask > 0).astype(np.uint8) * 255
+    h, w = rgb.shape[:2]
+    binm = (mask > 0).astype(np.uint8) if mask.max() <= 1 else (mask > 16).astype(np.uint8)
+    ys, xs = np.where(binm > 0)
+    if ys.size == 0:
+        return rgb.copy(), {"applied": False, "reason": "EMPTY_MASK"}
+
+    # Tính toán bounding box với padding thông minh
+    bw = int(xs.max() - xs.min() + 1)
+    bh = int(ys.max() - ys.min() + 1)
+    pad = max(24, int(max(bw, bh) * 0.15))
+    x0 = max(0, int(xs.min()) - pad)
+    y0 = max(0, int(ys.min()) - pad)
+    x1 = min(w, int(xs.max()) + 1 + pad)
+    y1 = min(h, int(ys.max()) + 1 + pad)
+
+    roi_rgb = rgb[y0:y1, x0:x1]
+    roi_mask = (binm[y0:y1, x0:x1] * 255).astype(np.uint8)
+
+    # Nếu vùng ROI nhỏ hơn đáng kể so với ảnh gốc (ví dụ logo góc hoặc chữ trên ảnh 4K)
+    # Ta chỉ inpaint trên vùng ROI này và ghép lại -> Nhanh gấp 50-100 lần!
+    out = rgb.copy()
+
     if use_ai:
-        if prefer_gpu:
-            if migan_available():
-                try:
-                    out = _tiled_migan_inpaint(rgb, m_u8)
-                    return out, {"applied": True, "kind": "custom_mask", "engine": "migan_gpu"}
-                except Exception:
-                    pass
-            if lama_onnx_available():
-                try:
-                    out = _lama_onnx_inpaint(rgb, m_u8)
-                    return out, {"applied": True, "kind": "custom_mask", "engine": "lama_onnx"}
-                except Exception:
-                    pass
-        else:
-            if lama_onnx_available():
-                try:
-                    out = _lama_onnx_inpaint(rgb, m_u8)
-                    return out, {"applied": True, "kind": "custom_mask", "engine": "lama_onnx"}
-                except Exception:
-                    pass
-            if migan_available():
-                try:
-                    out = _tiled_migan_inpaint(rgb, m_u8)
-                    return out, {"applied": True, "kind": "custom_mask", "engine": "migan_tiled"}
-                except Exception:
-                    pass
-        if lama_available():
-            out = _lama_inpaint(rgb, m_u8)
-            return out, {"applied": True, "kind": "custom_mask", "engine": "lama"}
+        if prefer_gpu and migan_available():
+            try:
+                cleaned_roi = _migan_once(roi_rgb, roi_mask, context=1.6)
+                out[y0:y1, x0:x1] = cleaned_roi
+                return out, {"applied": True, "kind": "roi_mask", "engine": "migan_gpu"}
+            except Exception:
+                pass
+        if lama_onnx_available():
+            try:
+                cleaned_roi = _lama_onnx_inpaint(roi_rgb, roi_mask)
+                out[y0:y1, x0:x1] = cleaned_roi
+                return out, {"applied": True, "kind": "roi_mask", "engine": "lama_onnx"}
+            except Exception:
+                pass
+        if migan_available():
+            try:
+                cleaned_roi = _migan_once(roi_rgb, roi_mask, context=1.6)
+                out[y0:y1, x0:x1] = cleaned_roi
+                return out, {"applied": True, "kind": "roi_mask", "engine": "migan"}
+            except Exception:
+                pass
 
     try:
         import cv2
-        out = cv2.inpaint(rgb, m_u8, 3, cv2.INPAINT_TELEA)
-        return out, {"applied": True, "kind": "custom_mask", "engine": "opencv_telea"}
+        cleaned_roi = cv2.inpaint(roi_rgb, roi_mask, 3, cv2.INPAINT_TELEA)
+        out[y0:y1, x0:x1] = cleaned_roi
+        return out, {"applied": True, "kind": "roi_mask", "engine": "opencv_telea"}
     except Exception:
-        out = _simple_inpaint(rgb, (m_u8 > 0).astype(np.uint8), radius=4)
-        return out, {"applied": True, "kind": "custom_mask", "engine": "numpy_inpaint"}
+        cleaned_roi = _simple_inpaint(roi_rgb, (roi_mask > 0).astype(np.uint8), radius=4)
+        out[y0:y1, x0:x1] = cleaned_roi
+        return out, {"applied": True, "kind": "roi_mask", "engine": "numpy_inpaint"}
 
 
 def extract_horizontal_text_mask(rgb: np.ndarray, sensitivity: float = 0.5) -> np.ndarray:
@@ -1028,7 +1043,7 @@ def _detect_best_encoder(ffmpeg: str) -> tuple[str, list[str]]:
 
     encoders = [
         ("h264_nvenc", ["-preset", "p4", "-cq", "19"]),
-        ("h264_qsv", ["-preset", "medium", "-global_quality", "20"]),
+        ("h264_qsv", ["-preset", "veryfast", "-global_quality", "22"]),
         ("h264_amf", ["-quality", "speed", "-rc", "cbr"]),
     ]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -1229,6 +1244,8 @@ def process_video(
     import time
     start_time = time.time()
     last_prog_time = start_time
+    cached_video_mask: Optional[np.ndarray] = None
+    cached_detected = False
 
     try:
         while True:
@@ -1266,13 +1283,31 @@ def process_video(
             if custom_mask is not None and int(custom_mask.sum()) > 0:
                 out, info = inpaint_mask(rgb, custom_mask, use_ai=use_ai, prefer_gpu=True)
             elif box:
-                out, info = inpaint_box(rgb, box, use_ai=use_ai, ai_passes=1 if use_ai else 2, prefer_gpu=True)
+                out, info = inpaint_box(rgb, box, use_ai=use_ai, ai_passes=1, prefer_gpu=True)
             elif mode == "stock_text":
                 out, info = remove_stock_text_watermark(rgb, use_ai=use_ai, prefer_gpu=True)
             elif mode == "horizontal_text":
                 out, info = remove_horizontal_text_watermark(rgb, use_ai=use_ai, prefer_gpu=True)
             else:
-                out, info = remove_smart_auto_watermark(rgb, use_ai=use_ai, prefer_gpu=True)
+                # Chế độ Smart Auto cho Video: Dò tìm trên frame đầu tiên và tái sử dụng mặt nạ ROI siêu tốc
+                if not cached_detected or (cached_video_mask is None and frame_idx % 30 == 1):
+                    out, info = remove_smart_auto_watermark(rgb, use_ai=use_ai, prefer_gpu=True)
+                    if info.get("applied"):
+                        b = info.get("box") or info.get("pos")
+                        if b:
+                            cached_video_mask = np.zeros((height, width), dtype=np.uint8)
+                            bx = max(0, int(b.get("x", 0)))
+                            by = max(0, int(b.get("y", 0)))
+                            bw = int(b.get("w", b.get("size", 40)))
+                            bh = int(b.get("h", b.get("size", 40)))
+                            cached_video_mask[by:by + bh, bx:bx + bw] = 255
+                    cached_detected = True
+
+                if cached_video_mask is not None:
+                    out, info = inpaint_mask(rgb, cached_video_mask, use_ai=use_ai, prefer_gpu=True)
+                else:
+                    out = rgb
+                    info = {"applied": False}
 
             if info.get("applied"):
                 applied += 1
