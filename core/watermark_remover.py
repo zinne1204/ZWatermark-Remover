@@ -715,23 +715,14 @@ def _migan_once(rgb: np.ndarray, mask_u8: np.ndarray, context: float) -> np.ndar
         pr = pred
     pr = np.clip(0.5 * pr + 0.5, 0, 1)
     pred_u8 = (pr * 255).astype(np.uint8)
-    pred_u8 = np.array(Image.fromarray(pred_u8).resize((side, side), Image.Resampling.BILINEAR))
+    if side != 512:
+        pred_u8 = np.array(Image.fromarray(pred_u8).resize((side, side), Image.Resampling.BILINEAR))
 
-    feather = np.array(
-        Image.fromarray((cm * 255).astype(np.uint8)).resize((side, side), Image.Resampling.BILINEAR)
-    ).astype(np.float32) / 255.0
-    try:
-        import cv2
-        k = max(3, side // 80)
-        if k % 2 == 0:
-            k += 1
-        feather = cv2.GaussianBlur(feather, (k, k), 0)
-    except Exception:
-        pass
-    alpha = feather[..., None]
-    blended = pred_u8.astype(np.float32) * alpha + crop.astype(np.float32) * (1 - alpha)
+    # Ghép chuẩn xác: Chỉ thay thế đúng pixel watermark (cm > 0), giữ nguyên 100% pixel ảnh gốc xung quanh
+    m_3c = (cm > 0)[..., None]
+    blended = np.where(m_3c, pred_u8, crop)
     result = rgb.copy()
-    result[top : top + side, left : left + side] = np.clip(blended, 0, 255).astype(np.uint8)
+    result[top : top + side, left : left + side] = blended
     return result
 
 
@@ -749,7 +740,7 @@ def _tiled_migan_inpaint(rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
 
     # Nếu vùng mask nhỏ và ảnh không quá to, chạy MIGAN tiêu chuẩn
     if max(bw, bh) <= 480 and max(w, h) <= 900:
-        return _migan_inpaint(rgb, mask_u8, contexts=(3.0, 2.0))
+        return _migan_inpaint(rgb, mask_u8, contexts=(2.0,))
 
     # Chạy Tiled Inpainting với sliding window 512x512
     tile_size = 512
@@ -768,7 +759,7 @@ def _tiled_migan_inpaint(rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
                 continue
 
             tile_rgb = out[y0_adj:y1, x0_adj:x1]
-            inp_tile = _migan_once(tile_rgb, tile_mask, context=1.6)
+            inp_tile = _migan_once(tile_rgb, tile_mask, context=1.5)
             out[y0_adj:y1, x0_adj:x1] = inp_tile
 
     return out
@@ -813,7 +804,7 @@ def extract_text_watermark_mask(rgb: np.ndarray, sensitivity: float = 0.5) -> np
 
 
 def inpaint_mask(rgb: np.ndarray, mask: np.ndarray, use_ai: bool = True, prefer_gpu: bool = False) -> tuple[np.ndarray, dict]:
-    """Inpaint theo một mặt nạ nhị phân bất kỳ với tối ưu ROI Bounding Box siêu tốc cho cả 4K/8K."""
+    """Inpaint theo một mặt nạ nhị phân bất kỳ với độ sắc nét 100%, bảo vệ toàn vẹn chi tiết nền."""
     if mask is None or int(mask.sum()) == 0:
         return rgb.copy(), {"applied": False, "reason": "EMPTY_MASK"}
 
@@ -823,54 +814,50 @@ def inpaint_mask(rgb: np.ndarray, mask: np.ndarray, use_ai: bool = True, prefer_
     if ys.size == 0:
         return rgb.copy(), {"applied": False, "reason": "EMPTY_MASK"}
 
-    # Tính toán bounding box với padding thông minh
-    bw = int(xs.max() - xs.min() + 1)
-    bh = int(ys.max() - ys.min() + 1)
-    pad = max(24, int(max(bw, bh) * 0.15))
-    x0 = max(0, int(xs.min()) - pad)
-    y0 = max(0, int(ys.min()) - pad)
-    x1 = min(w, int(xs.max()) + 1 + pad)
-    y1 = min(h, int(ys.max()) + 1 + pad)
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    bw, bh = x1 - x0, y1 - y0
 
-    roi_rgb = rgb[y0:y1, x0:x1]
-    roi_mask = (binm[y0:y1, x0:x1] * 255).astype(np.uint8)
+    # Lấy vùng context 1:1 xung quanh watermark (đảm bảo đủ 512x512 để AI/OpenCV chạy chuẩn tỉ lệ)
+    side = int(min(max(512, int(max(bw, bh) * 1.5)), min(w, h)))
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    left = int(max(0, min(w - side, cx - side // 2)))
+    top = int(max(0, min(h - side, cy - side // 2)))
 
-    # Nếu vùng ROI nhỏ hơn đáng kể so với ảnh gốc (ví dụ logo góc hoặc chữ trên ảnh 4K)
-    # Ta chỉ inpaint trên vùng ROI này và ghép lại -> Nhanh gấp 50-100 lần!
+    crop_rgb = rgb[top : top + side, left : left + side]
+    crop_mask = binm[top : top + side, left : left + side]
+
     out = rgb.copy()
 
     if use_ai:
         if prefer_gpu and migan_available():
             try:
-                cleaned_roi = _migan_once(roi_rgb, roi_mask, context=1.6)
-                out[y0:y1, x0:x1] = cleaned_roi
-                return out, {"applied": True, "kind": "roi_mask", "engine": "migan_gpu"}
+                cleaned_crop = _migan_once(crop_rgb, crop_mask, context=1.5)
+                m_3c = (crop_mask > 0)[..., None]
+                out[top : top + side, left : left + side] = np.where(m_3c, cleaned_crop, crop_rgb)
+                return out, {"applied": True, "kind": "crisp_mask", "engine": "migan_gpu"}
             except Exception:
                 pass
         if lama_onnx_available():
             try:
-                cleaned_roi = _lama_onnx_inpaint(roi_rgb, roi_mask)
-                out[y0:y1, x0:x1] = cleaned_roi
-                return out, {"applied": True, "kind": "roi_mask", "engine": "lama_onnx"}
-            except Exception:
-                pass
-        if migan_available():
-            try:
-                cleaned_roi = _migan_once(roi_rgb, roi_mask, context=1.6)
-                out[y0:y1, x0:x1] = cleaned_roi
-                return out, {"applied": True, "kind": "roi_mask", "engine": "migan"}
+                cleaned_crop = _lama_onnx_inpaint(crop_rgb, crop_mask)
+                m_3c = (crop_mask > 0)[..., None]
+                out[top : top + side, left : left + side] = np.where(m_3c, cleaned_crop, crop_rgb)
+                return out, {"applied": True, "kind": "crisp_mask", "engine": "lama_onnx"}
             except Exception:
                 pass
 
     try:
         import cv2
-        cleaned_roi = cv2.inpaint(roi_rgb, roi_mask, 3, cv2.INPAINT_TELEA)
-        out[y0:y1, x0:x1] = cleaned_roi
-        return out, {"applied": True, "kind": "roi_mask", "engine": "opencv_telea"}
+        cleaned_crop = cv2.inpaint(crop_rgb, (crop_mask * 255).astype(np.uint8), 3, cv2.INPAINT_TELEA)
+        m_3c = (crop_mask > 0)[..., None]
+        out[top : top + side, left : left + side] = np.where(m_3c, cleaned_crop, crop_rgb)
+        return out, {"applied": True, "kind": "crisp_mask", "engine": "opencv_telea"}
     except Exception:
-        cleaned_roi = _simple_inpaint(roi_rgb, (roi_mask > 0).astype(np.uint8), radius=4)
-        out[y0:y1, x0:x1] = cleaned_roi
-        return out, {"applied": True, "kind": "roi_mask", "engine": "numpy_inpaint"}
+        cleaned_crop = _simple_inpaint(crop_rgb, crop_mask, radius=4)
+        m_3c = (crop_mask > 0)[..., None]
+        out[top : top + side, left : left + side] = np.where(m_3c, cleaned_crop, crop_rgb)
+        return out, {"applied": True, "kind": "crisp_mask", "engine": "numpy_inpaint"}
 
 
 def extract_horizontal_text_mask(rgb: np.ndarray, sensitivity: float = 0.5) -> np.ndarray:
