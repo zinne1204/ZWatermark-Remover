@@ -26,12 +26,15 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+*.spec
+*.exe
 
-# Nuitka build artifacts
+# Nuitka build artifacts & scripts
 *.build/
 *.dist/
 *.onefile-build/
 *.crash-report.xml
+build*.bat
 
 # Virtual Environment
 venv/
@@ -55,4 +58,3 @@ assets/models/*.onnx
 # Temporary / Log files
 *.log
 *.tmp
-*.bat

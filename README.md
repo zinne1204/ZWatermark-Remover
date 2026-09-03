@@ -5,14 +5,13 @@
 </p>
 
 <p align="center">
-  <b>Công cụ Windows Desktop mã nguồn mở chuyên biệt để xóa Watermark, Logo, Phụ đề & Chữ chìm trên cả Hình ảnh và Video bằng AI Deep Inpainting & Tăng tốc GPU DirectML/CUDA.</b>
+  <b>Công cụ Windows Desktop chuyên biệt để xóa Watermark, Logo, Phụ đề & Chữ chìm trên cả Hình ảnh và Video bằng AI Deep Inpainting & Tăng tốc GPU DirectML/CUDA.</b>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Version"/>
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg" alt="Windows"/>
   <img src="https://img.shields.io/badge/GPU%20Acceleration-DirectML%20%7C%20CUDA%20%7C%20NVENC-success.svg" alt="GPU Support"/>
-  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License"/>
 </p>
 
 ---
@@ -47,8 +46,8 @@
 
 ### 2. Cài đặt thư viện:
 ```bash
-git clone https://github.com/your-username/zwatermark-remover.git
-cd zwatermark-remover
+git clone https://github.com/zinne1204/ZWatermark-Remover.git
+cd ZWatermark-Remover
 pip install -r requirements.txt
 ```
 
@@ -60,32 +59,8 @@ python app.py
 
 ---
 
-## 🛠️ Hướng Dẫn Đóng Gói .EXE (Build Standalone Executable)
-
-Dự án hỗ trợ sẵn 2 kịch bản biên dịch C++ tối ưu bằng **Nuitka**:
-
-1. **Đóng gói Thư mục Standalone (Khuyên dùng, chạy nhanh nhất & không bị Antivirus chặn):**
-   ```bash
-   build-standalone.bat
-   ```
-   *File `.exe` sẽ được tạo tại:* `dist_nuitka\ZWatermarkRemover\ZWatermarkRemover.exe`
-
-2. **Đóng gói Onefile (1 file `.exe` duy nhất):**
-   ```bash
-   build-onefile.bat
-   ```
-   *File `.exe` sẽ được tạo tại:* `dist_onefile\ZWatermarkRemover.exe`
-
----
-
 ## 🎮 Phím Tắt Tiện Lợi (Keyboard Shortcuts)
 
 * `Ctrl + Z`: Hoàn tác (Undo) nét vẽ cọ / thước kẻ trong Studio.
 * `Drag & Drop`: Kéo thả trực tiếp hàng loạt ảnh hoặc video vào phần mềm.
 * `Split Slider`: Kéo thanh trượt chuột trái qua lại trên khung Studio để so sánh.
-
----
-
-## 📄 Bản Quyền & Giấy Phép (License)
-
-Phần mềm được phát hành theo giấy phép mã nguồn mở **[MIT License](LICENSE)**. Bạn hoàn toàn có quyền sử dụng miễn phí cho mục đích cá nhân và thương mại.
