@@ -1,0 +1,58 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+dist_*/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Nuitka build artifacts
+*.build/
+*.dist/
+*.onefile-build/
+*.crash-report.xml
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+env/
+
+# IDE & OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Heavy Model files (auto-downloaded on first launch)
+assets/models/*.onnx
+!assets/models/.gitkeep
+
+# Temporary / Log files
+*.log
+*.tmp
+*.bat
